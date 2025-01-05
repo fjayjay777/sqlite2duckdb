@@ -41,15 +41,14 @@ func (c *translatorCore) VisitSelect_stmt(ctx *parser.Select_stmtContext) any {
 }
 
 func (c *translatorCore) VisitSelect_core(ctx *parser.Select_coreContext) any {
-	var columns []string
-	for i := 0; i < len(ctx.AllResult_column()); i++ {
-		col := c.Visit(ctx.Result_column(i)).(string)
-		columns = append(columns, col)
+	fromClause := c.Visit(ctx.Table_or_subquery(0)).(string)
+	columnStr := c.buildColumns(ctx)
+	whereCluase := c.buildWhereClause(ctx)
+
+	if whereCluase != "" {
+		return fmt.Sprintf("SELECT %s FROM %s %s", columnStr, fromClause, whereCluase)
 	}
 
-	columnStr := strings.Join(columns, ", ")
-
-	fromClause := c.Visit(ctx.Table_or_subquery(0)).(string)
 	return fmt.Sprintf("SELECT %s FROM %s", columnStr, fromClause)
 }
 
@@ -70,4 +69,47 @@ func (c *translatorCore) VisitResult_column(ctx *parser.Result_columnContext) an
 	}
 
 	return ctx.GetText()
+}
+
+func (c *translatorCore) VisitExpr(ctx *parser.ExprContext) interface{} {
+	if ctx == nil {
+		return nil
+	}
+
+	exprs := ctx.AllExpr()
+
+	// binary operation
+	if len(exprs) == 2 {
+		leftExpr := c.Visit(exprs[0]).(string)
+		rightExpr := c.Visit(exprs[1]).(string)
+
+		operator := ctx.GetChild(1).(antlr.TerminalNode).GetSymbol().GetText()
+
+		return fmt.Sprintf("%s %s %s", leftExpr, operator, rightExpr)
+	}
+
+	// literals, column names, etc.
+	return ctx.GetText()
+}
+
+func (c *translatorCore) buildColumns(ctx *parser.Select_coreContext) string {
+	var columns []string
+	for i := 0; i < len(ctx.AllResult_column()); i++ {
+		col := c.Visit(ctx.Result_column(i)).(string)
+		columns = append(columns, col)
+	}
+
+	return strings.Join(columns, ", ")
+}
+
+func (c *translatorCore) buildWhereClause(ctx *parser.Select_coreContext) string {
+	var whereCluase string
+	if exprs := ctx.AllExpr(); len(exprs) > 0 {
+		var conditions []string
+		for _, expr := range exprs {
+			conditions = append(conditions, c.Visit(expr).(string))
+		}
+		whereCluase = fmt.Sprintf("WHERE %s", strings.Join(conditions, " AND "))
+	}
+	return whereCluase
 }
