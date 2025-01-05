@@ -37,19 +37,37 @@ func (c *translatorCore) VisitSelect_stmt(ctx *parser.Select_stmtContext) any {
 	if selectCore == nil {
 		return ""
 	}
-	return c.Visit(selectCore)
+
+	query := c.Visit(selectCore).(string)
+
+	if orderBy := ctx.Order_by_stmt(); orderBy != nil {
+		query = fmt.Sprintf("%s %s", query, c.Visit(orderBy))
+	}
+
+	if limit := ctx.Limit_stmt(); limit != nil {
+		query = fmt.Sprintf("%s %s", query, c.Visit(limit))
+	}
+
+	return query
 }
 
 func (c *translatorCore) VisitSelect_core(ctx *parser.Select_coreContext) any {
 	fromClause := c.Visit(ctx.Table_or_subquery(0)).(string)
 	columnStr := c.buildColumns(ctx)
-	whereCluase := c.buildWhereClause(ctx)
+	whereClause := c.buildWhereClause(ctx)
+	groupByClause := c.buildGroupByClause(ctx)
 
-	if whereCluase != "" {
-		return fmt.Sprintf("SELECT %s FROM %s %s", columnStr, fromClause, whereCluase)
+	query := fmt.Sprintf("SELECT %s FROM %s", columnStr, fromClause)
+
+	if whereClause != "" {
+		query = fmt.Sprintf("%s %s", query, whereClause)
 	}
 
-	return fmt.Sprintf("SELECT %s FROM %s", columnStr, fromClause)
+	if groupByClause != "" {
+		query = fmt.Sprintf("%s %s", query, groupByClause)
+	}
+
+	return query
 }
 
 func (c *translatorCore) VisitTable_or_subquery(ctx *parser.Table_or_subqueryContext) any {
@@ -76,9 +94,12 @@ func (c *translatorCore) VisitExpr(ctx *parser.ExprContext) interface{} {
 		return nil
 	}
 
+	if ctx.Select_stmt() != nil {
+		return fmt.Sprintf("(%s)", c.Visit(ctx.Select_stmt()))
+	}
+
 	exprs := ctx.AllExpr()
 
-	// binary operation
 	if len(exprs) == 2 {
 		leftExpr := c.Visit(exprs[0]).(string)
 		rightExpr := c.Visit(exprs[1]).(string)
@@ -88,8 +109,42 @@ func (c *translatorCore) VisitExpr(ctx *parser.ExprContext) interface{} {
 		return fmt.Sprintf("%s %s %s", leftExpr, operator, rightExpr)
 	}
 
-	// literals, column names, etc.
 	return ctx.GetText()
+}
+
+func (c *translatorCore) VisitOrder_by_stmt(ctx *parser.Order_by_stmtContext) interface{} {
+	var orderClauses []string
+
+	for i := 0; i < len(ctx.AllOrdering_term()); i++ {
+		term := ctx.Ordering_term(i)
+		expr := term.Expr().GetText()
+
+		// if direction exists (ASC/DESC)
+		if term.GetChildCount() > 1 {
+			direction := term.GetChild(1).(antlr.ParseTree).GetText()
+			orderClauses = append(orderClauses, fmt.Sprintf("%s %s", expr, direction))
+		} else {
+			orderClauses = append(orderClauses, expr)
+		}
+	}
+
+	return fmt.Sprintf("ORDER BY %s", strings.Join(orderClauses, ", "))
+}
+
+func (c *translatorCore) VisitLimit_stmt(ctx *parser.Limit_stmtContext) any {
+	if ctx == nil {
+		return ""
+	}
+
+	exprs := ctx.AllExpr()
+	if len(exprs) == 1 {
+		return fmt.Sprintf("LIMIT %s", c.Visit(exprs[0]))
+	}
+
+	if ctx.OFFSET_() != nil {
+		return fmt.Sprintf("LIMIT %s OFFSET %s", c.Visit(exprs[0]), c.Visit(exprs[1]))
+	}
+	return fmt.Sprintf("LIMIT %s OFFSET %s", c.Visit(exprs[1]), c.Visit(exprs[0]))
 }
 
 func (c *translatorCore) buildColumns(ctx *parser.Select_coreContext) string {
@@ -103,13 +158,19 @@ func (c *translatorCore) buildColumns(ctx *parser.Select_coreContext) string {
 }
 
 func (c *translatorCore) buildWhereClause(ctx *parser.Select_coreContext) string {
-	var whereCluase string
-	if exprs := ctx.AllExpr(); len(exprs) > 0 {
-		var conditions []string
-		for _, expr := range exprs {
-			conditions = append(conditions, c.Visit(expr).(string))
-		}
-		whereCluase = fmt.Sprintf("WHERE %s", strings.Join(conditions, " AND "))
+	if whereExpr := ctx.GetWhereExpr(); whereExpr != nil {
+		return fmt.Sprintf("WHERE %s", c.Visit(whereExpr))
 	}
-	return whereCluase
+	return ""
+}
+
+func (c *translatorCore) buildGroupByClause(ctx *parser.Select_coreContext) string {
+	if groupByExprs := ctx.GetGroupByExpr(); len(groupByExprs) > 0 {
+		var columns []string
+		for _, expr := range groupByExprs {
+			columns = append(columns, expr.GetText())
+		}
+		return fmt.Sprintf("GROUP BY %s", strings.Join(columns, ", "))
+	}
+	return ""
 }
