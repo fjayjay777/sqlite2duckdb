@@ -351,6 +351,40 @@ func TestSelectWithSubqueries(t *testing.T) {
 	}
 }
 
+func TestStringConcatenation(t *testing.T) {
+    tests := []struct {
+        name     string
+        input    string
+        expected string
+    }{
+        {
+            name:     "simple concatenation",
+            input:    "SELECT first_name || ' ' || last_name FROM users",
+            expected: "SELECT concat(first_name, ' ', last_name) FROM users",
+        },
+        {
+            name:     "concatenation in where",
+            input:    "SELECT * FROM users WHERE first_name || last_name = 'JohnDoe'",
+            expected: "SELECT * FROM users WHERE concat(first_name, last_name) = 'JohnDoe'",
+        },
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            core := translatorCore{
+                BaseSQLiteParserVisitor: &parser.BaseSQLiteParserVisitor{},
+            }
+
+            tree := createParseTree(tt.input)
+            got := core.Visit(tree).(string)
+
+            if got != tt.expected {
+                t.Errorf("got %q, want %q", got, tt.expected)
+            }
+        })
+    }
+}
+
 func createParseTree(input string) antlr.ParseTree {
 	inputStream := antlr.NewInputStream(input)
 	lexer := parser.NewSQLiteLexer(inputStream)

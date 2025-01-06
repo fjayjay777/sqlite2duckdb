@@ -136,12 +136,19 @@ func (c *translatorCore) VisitExpr(ctx *parser.ExprContext) interface{} {
 	}
 
 	exprs := ctx.AllExpr()
-
 	if len(exprs) == 2 {
 		leftExpr := c.Visit(exprs[0]).(string)
 		rightExpr := c.Visit(exprs[1]).(string)
-
 		operator := ctx.GetChild(1).(antlr.TerminalNode).GetSymbol().GetText()
+
+		if operator == "||" {
+			if parent, ok := ctx.GetParent().(*parser.ExprContext); ok && parent.GetChild(1) != nil {
+				if parentOp, ok := parent.GetChild(1).(antlr.TerminalNode); ok && parentOp.GetSymbol().GetText() == "||" {
+					return fmt.Sprintf("%s, %s", leftExpr, rightExpr)
+				}
+			}
+			return fmt.Sprintf("concat(%s, %s)", leftExpr, rightExpr)
+		}
 
 		return fmt.Sprintf("%s %s %s", leftExpr, operator, rightExpr)
 	}
@@ -223,24 +230,8 @@ func (c *translatorCore) VisitJoin_clause(ctx *parser.Join_clauseContext) any {
 		joinOp := ctx.Join_operator(i)
 		table := c.Visit(ctx.Table_or_subquery(i + 1)).(string)
 
-		// Debug join operator details
-		fmt.Printf("\nDetailed join operator debug for index %d:\n", i)
-		fmt.Printf("Full text: '%s'\n", joinOp.GetText())
-		fmt.Printf("Child count: %d\n", joinOp.GetChildCount())
-		for j := 0; j < joinOp.GetChildCount(); j++ {
-			child := joinOp.GetChild(j).(antlr.ParseTree)
-			fmt.Printf("Child %d: '%s' (type: %T)\n", j, child.GetText(), child)
-		}
-		fmt.Printf("NATURAL_(): %v\n", joinOp.NATURAL_() != nil)
-		fmt.Printf("LEFT_(): %v\n", joinOp.LEFT_() != nil)
-		fmt.Printf("CROSS_(): %v\n", joinOp.CROSS_() != nil)
-		fmt.Printf("OUTER_(): %v\n", joinOp.OUTER_() != nil)
-
-		// Check first table for join type
 		firstTable := ctx.Table_or_subquery(0)
-		fmt.Printf("First table text: '%s'\n", firstTable.GetText())
 
-		// Determine join type from both the join operator and table text
 		var joinType string
 		tableText := firstTable.GetText()
 
@@ -258,8 +249,6 @@ func (c *translatorCore) VisitJoin_clause(ctx *parser.Join_clauseContext) any {
 			joinType = "JOIN"
 		}
 
-		fmt.Printf("Selected join type: '%s'\n", joinType)
-
 		var condition string
 		if constraint := ctx.Join_constraint(i); constraint != nil {
 			condition = c.Visit(constraint).(string)
@@ -275,7 +264,7 @@ func (c *translatorCore) VisitJoin_constraint(ctx *parser.Join_constraintContext
 		return fmt.Sprintf("ON %s", c.Visit(ctx.Expr()))
 	}
 	if ctx.USING_() != nil {
-		return fmt.Sprintf("USING %s", ctx.GetText()[5:]) // Skip "USING" keyword
+		return fmt.Sprintf("USING %s", ctx.GetText()[5:]) // skip "USING" keyword
 	}
 	return ""
 }
