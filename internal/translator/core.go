@@ -52,7 +52,16 @@ func (c *translatorCore) VisitSelect_stmt(ctx *parser.Select_stmtContext) any {
 }
 
 func (c *translatorCore) VisitSelect_core(ctx *parser.Select_coreContext) any {
-	fromClause := c.Visit(ctx.Table_or_subquery(0)).(string)
+	var fromClause string
+
+	// Handle joins if they exist
+	if join := ctx.Join_clause(); join != nil {
+		fromClause = c.Visit(join).(string)
+	} else {
+		// Get the base table/subquery only if no joins
+		fromClause = c.Visit(ctx.Table_or_subquery(0)).(string)
+	}
+
 	columnStr := c.buildColumns(ctx)
 	whereClause := c.buildWhereClause(ctx)
 	groupByClause := c.buildGroupByClause(ctx)
@@ -71,19 +80,43 @@ func (c *translatorCore) VisitSelect_core(ctx *parser.Select_coreContext) any {
 }
 
 func (c *translatorCore) VisitTable_or_subquery(ctx *parser.Table_or_subqueryContext) any {
-	tableName := ctx.Table_name().GetText()
-	return tableName
+	if ctx.Table_name() != nil {
+		tableName := ctx.Table_name().GetText()
+		// Remove any join type keywords that might be concatenated
+		tableName = strings.TrimSuffix(tableName, "INNER")
+		tableName = strings.TrimSuffix(tableName, "LEFT")
+		tableName = strings.TrimSuffix(tableName, "CROSS")
+		tableName = strings.TrimSuffix(tableName, "NATURAL")
+		return tableName
+	}
+
+	if ctx.Select_stmt() != nil {
+		subquery := c.Visit(ctx.Select_stmt())
+		if ctx.Table_alias() != nil {
+			return fmt.Sprintf("(%s) AS %s", subquery, ctx.Table_alias().GetText())
+		}
+		return fmt.Sprintf("(%s)", subquery)
+	}
+
+	return strings.TrimSuffix(ctx.GetText(), "INNER")
 }
 
 func (c *translatorCore) VisitResult_column(ctx *parser.Result_columnContext) any {
 	if ctx.STAR() != nil {
+		if table := ctx.Table_name(); table != nil {
+			return fmt.Sprintf("%s.*", table.GetText())
+		}
 		return "*"
 	}
 
 	if ctx.Column_alias() != nil {
-		expr := ctx.Expr().GetText()
+		expr := c.Visit(ctx.Expr())
 		alias := ctx.Column_alias().GetText()
 		return fmt.Sprintf("%s AS %s", expr, alias)
+	}
+
+	if ctx.Expr() != nil {
+		return c.Visit(ctx.Expr())
 	}
 
 	return ctx.GetText()
@@ -92,6 +125,10 @@ func (c *translatorCore) VisitResult_column(ctx *parser.Result_columnContext) an
 func (c *translatorCore) VisitExpr(ctx *parser.ExprContext) interface{} {
 	if ctx == nil {
 		return nil
+	}
+
+	if ctx.EXISTS_() != nil {
+		return fmt.Sprintf("EXISTS (%s)", c.Visit(ctx.Select_stmt()))
 	}
 
 	if ctx.Select_stmt() != nil {
@@ -171,6 +208,74 @@ func (c *translatorCore) buildGroupByClause(ctx *parser.Select_coreContext) stri
 			columns = append(columns, expr.GetText())
 		}
 		return fmt.Sprintf("GROUP BY %s", strings.Join(columns, ", "))
+	}
+	return ""
+}
+
+func (c *translatorCore) VisitJoin_clause(ctx *parser.Join_clauseContext) any {
+	if ctx == nil {
+		return ""
+	}
+
+	result := c.Visit(ctx.Table_or_subquery(0)).(string)
+
+	for i := 0; i < len(ctx.AllJoin_operator()); i++ {
+		joinOp := ctx.Join_operator(i)
+		table := c.Visit(ctx.Table_or_subquery(i + 1)).(string)
+
+		// Debug join operator details
+		fmt.Printf("\nDetailed join operator debug for index %d:\n", i)
+		fmt.Printf("Full text: '%s'\n", joinOp.GetText())
+		fmt.Printf("Child count: %d\n", joinOp.GetChildCount())
+		for j := 0; j < joinOp.GetChildCount(); j++ {
+			child := joinOp.GetChild(j).(antlr.ParseTree)
+			fmt.Printf("Child %d: '%s' (type: %T)\n", j, child.GetText(), child)
+		}
+		fmt.Printf("NATURAL_(): %v\n", joinOp.NATURAL_() != nil)
+		fmt.Printf("LEFT_(): %v\n", joinOp.LEFT_() != nil)
+		fmt.Printf("CROSS_(): %v\n", joinOp.CROSS_() != nil)
+		fmt.Printf("OUTER_(): %v\n", joinOp.OUTER_() != nil)
+
+		// Check first table for join type
+		firstTable := ctx.Table_or_subquery(0)
+		fmt.Printf("First table text: '%s'\n", firstTable.GetText())
+
+		// Determine join type from both the join operator and table text
+		var joinType string
+		tableText := firstTable.GetText()
+
+		if strings.Contains(tableText, "NATURAL") {
+			joinType = "NATURAL JOIN"
+		} else if strings.Contains(tableText, "CROSS") {
+			joinType = "CROSS JOIN"
+		} else if joinOp.LEFT_() != nil || strings.Contains(tableText, "LEFT") {
+			if joinOp.OUTER_() != nil {
+				joinType = "LEFT OUTER JOIN"
+			} else {
+				joinType = "LEFT JOIN"
+			}
+		} else {
+			joinType = "JOIN"
+		}
+
+		fmt.Printf("Selected join type: '%s'\n", joinType)
+
+		var condition string
+		if constraint := ctx.Join_constraint(i); constraint != nil {
+			condition = c.Visit(constraint).(string)
+		}
+		result = fmt.Sprintf("%s %s %s %s", result, joinType, table, strings.TrimSpace(condition))
+	}
+
+	return strings.TrimSpace(result)
+}
+
+func (c *translatorCore) VisitJoin_constraint(ctx *parser.Join_constraintContext) any {
+	if ctx.ON_() != nil {
+		return fmt.Sprintf("ON %s", c.Visit(ctx.Expr()))
+	}
+	if ctx.USING_() != nil {
+		return fmt.Sprintf("USING %s", ctx.GetText()[5:]) // Skip "USING" keyword
 	}
 	return ""
 }
